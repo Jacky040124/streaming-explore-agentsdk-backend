@@ -4,40 +4,28 @@ Defines Pydantic models for consistent JSON output format.
 """
 
 from datetime import datetime
-from typing import Optional
+from typing import Optional, List
 from pydantic import BaseModel, Field
 
+class ToolUseStatus(BaseModel):
+    name: str
+    complete: bool
 
 class WorkflowMetadata(BaseModel):
     """Metadata for workflow execution."""
     timestamp: datetime = Field(default_factory=datetime.now)
-    workflow_id: str
+    workflow_id: str 
     execution_time_seconds: Optional[float] = None
     status: str = "completed"
+    tool_used: List[ToolUseStatus] = []
 
 
 class ContentCreationResult(BaseModel):
-    """Complete result from content creation workflow."""
-    
-    # Research phase
     research_summary: str = Field(description="Summary of web research findings")
-    
-    # Prompt generation phase
-    image_prompt: str = Field(description="Optimized prompt for image generation")
-    story_prompt: str = Field(description="Optimized prompt for story writing")
-    
-    # Content creation phase
     generated_image: Optional[str] = Field(description="Generated image data or URL", default=None)
     generated_story: str = Field(description="Generated story content")
-    
-    # Workflow metadata
     metadata: WorkflowMetadata
     
-    class Config:
-        """Pydantic configuration."""
-        json_encoders = {
-            datetime: lambda v: v.isoformat()
-        }
 
 
 class PromptGenerationResult(BaseModel):
