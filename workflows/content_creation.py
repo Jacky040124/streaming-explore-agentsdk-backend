@@ -9,6 +9,7 @@ import asyncio
 import uuid
 from datetime import datetime
 from typing import List, Optional
+import json
 
 from agents import Runner
 from utils.models import ContentCreationResult, WorkflowMetadata, PromptGenerationResult, ToolUseStatus
@@ -27,6 +28,11 @@ class ContentCreationWorkflow:
         self.workflow_id = str(uuid.uuid4())
         self.start_time: Optional[datetime] = None
         self.tools_used: List[ToolUseStatus] = []
+        # Store results for final output
+        self.research_result: Optional[str] = None
+        self.prompt_result: Optional[PromptGenerationResult] = None
+        self.image_result: Optional[str] = None
+        self.story_result: Optional[str] = None
 
     async def execute(self, user_prompt: str) -> ContentCreationResult:
         """
@@ -63,6 +69,51 @@ class ContentCreationWorkflow:
         except Exception as e:
             # Return error result
             return self._create_error_result(str(e))
+    
+    async def execute_stream(self, user_prompt: str):
+        """
+        Execute workflow with streaming updates.
+        Yields progress events as the workflow executes.
+        """
+        self.start_time = datetime.now()
+        
+        try:
+            # Phase 1: Research
+            yield {"type": "tool_update", "tool": "research_tool", "status": "started"}
+            self.research_result = await self._research(user_prompt)
+            yield {"type": "tool_update", "tool": "research_tool", "status": "completed"}
+            
+            # Phase 2: Generate specialized prompts
+            yield {"type": "tool_update", "tool": "prompt_tool", "status": "started"}
+            self.prompt_result = await self._generate_prompt(self.research_result, user_prompt)
+            yield {"type": "tool_update", "tool": "prompt_tool", "status": "completed"}
+            
+            # Phase 3: Create content (parallel execution)
+            yield {"type": "tool_update", "tool": "image_tool", "status": "started"}
+            yield {"type": "tool_update", "tool": "story_tool", "status": "started"}
+            
+            self.image_result, self.story_result = await self._content_creation_phase(
+                self.prompt_result.image_prompt,
+                self.prompt_result.story_prompt
+            )
+            
+            yield {"type": "tool_update", "tool": "image_tool", "status": "completed"}
+            yield {"type": "tool_update", "tool": "story_tool", "status": "completed"}
+            
+        except Exception as e:
+            yield {"type": "error", "message": str(e)}
+            raise
+    
+    async def get_final_result(self) -> ContentCreationResult:
+        """Get the final result after streaming execution."""
+        if self.research_result and self.image_result and self.story_result:
+            return self._create_final_result(
+                self.research_result,
+                self.image_result,
+                self.story_result
+            )
+        else:
+            return self._create_error_result("Workflow incomplete")
 
     async def _research(self, user_prompt: str) -> str:
         self.tools_used.append(ToolUseStatus(name="research_tool",complete=False))
@@ -174,3 +225,36 @@ async def create_content(user_prompt: str, save_to_markdown: bool = True) -> Con
             print(f"Warning: Failed to save markdown: {e}")
 
     return result
+
+async def create_content_stream_generator(user_prompt: str, save_markdown: bool):
+    """Generate SSE events for workflow progress"""
+    workflow = ContentCreationWorkflow()
+    
+    try:
+        # Stream progress events
+        async for event in workflow.execute_stream(user_prompt):
+            # Format as SSE
+            yield f"data: {json.dumps(event)}\n\n"
+        
+        # Get final result
+        result = await workflow.get_final_result()
+        
+        # Save to markdown if requested and successful
+        if save_markdown and result.metadata.status == "completed":
+            try:
+                file_path = save_workflow_result(result)
+                print(f"\n=== Result saved to: {file_path} ===")
+            except Exception as e:
+                print(f"Warning: Failed to save markdown: {e}")
+        
+        # Send final result - use model_dump with mode='json' to handle datetime serialization
+        try:
+            result_dict = result.model_dump(mode='json')
+            yield f"data: {json.dumps({'type': 'complete', 'result': result_dict})}\n\n"
+        except Exception as e:
+            yield f"data: {json.dumps({'type': 'error', 'message': f'Failed to serialize result: {str(e)}'})}\n\n"
+            
+    except Exception as e:
+        # Handle any unexpected errors during streaming
+        print(f"Streaming error: {e}")
+        yield f"data: {json.dumps({'type': 'error', 'message': str(e)})}\n\n"
